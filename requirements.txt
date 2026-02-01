@@ -1,0 +1,12 @@
+fastapi
+uvicorn
+python-multipart
+streamlit
+requests
+langchain-core
+langchain-community
+langchain-google-genai
+langchain-text-splitters
+langchain-classic
+faiss-cpu
+langchainhub
