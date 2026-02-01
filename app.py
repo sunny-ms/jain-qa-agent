@@ -24,7 +24,13 @@ with st.sidebar:
     if st.button("Index Document") and uploaded_file:
         files = {"file": (uploaded_file.name, uploaded_file.getvalue(), "text/plain")}
         r = requests.post(f"{API_URL}/upload", files=files, headers=headers)
-        st.success(r.json().get("message"))
+        try:
+            if r.status_code == 200:
+                st.success(r.json().get("message"))
+            else:
+                st.error(f"Error: {r.status_code} - {r.text}")
+        except requests.exceptions.JSONDecodeError:
+            st.error(f"Error: Invalid response from server - {r.text}")
 
 # Chat Logic
 if "messages" not in st.session_state: st.session_state.messages = []
@@ -43,6 +49,13 @@ if prompt := st.chat_input("Ask a question..."):
         headers=headers
     )
     
-    answer = r.json().get("answer", "Error: Check API key or connection.")
+    try:
+        if r.status_code == 200:
+            answer = r.json().get("answer", "Error: No answer provided.")
+        else:
+            answer = f"Error: {r.status_code} - {r.text}"
+    except requests.exceptions.JSONDecodeError:
+        answer = f"Error: Invalid response from server - {r.text}"
+    
     st.session_state.messages.append({"role": "assistant", "content": answer})
     st.chat_message("assistant").write(answer)
