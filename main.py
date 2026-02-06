@@ -24,7 +24,7 @@ user_memories = {}
 
 # Helper to initialize models with a specific key
 def get_llm_and_embeddings(api_key: str):
-    embeddings = GoogleGenerativeAIEmbeddings(model="models/text-embedding-001", google_api_key=api_key)
+    embeddings = GoogleGenerativeAIEmbeddings(model="models/text-embedding-005", google_api_key=api_key)
     llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=api_key)
     return embeddings, llm
 
