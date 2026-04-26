@@ -1,4 +1,5 @@
 import os
+import re
 from fastapi import FastAPI, UploadFile, File, Form, Header
 from typing import Optional
 from dotenv import load_dotenv
@@ -28,6 +29,66 @@ def get_llm_and_embeddings(api_key: str):
     llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=api_key)
     return embeddings, llm
 
+def parse_youtube_transcription(content: str):
+    """Parse a YouTube transcription file with --- header and [MM:SS:frames] timestamps."""
+    from langchain_core.documents import Document
+
+    # Extract header block
+    header_match = re.match(r'^---\s*\n(.*?)\n---\s*\n', content, re.DOTALL)
+    if not header_match:
+        return None
+
+    header_text = header_match.group(1)
+    body = content[header_match.end():]
+
+    # Parse header fields
+    meta = {}
+    for line in header_text.strip().splitlines():
+        if ':' in line:
+            key, val = line.split(':', 1)
+            meta[key.strip()] = val.strip()
+
+    if meta.get('source_type') != 'youtube' or 'youtube_url' not in meta:
+        return None
+
+    # Extract video ID from URL
+    url = meta['youtube_url']
+    video_id_match = re.search(r'(?:v=|live/)([A-Za-z0-9_-]+)', url)
+    video_id = video_id_match.group(1) if video_id_match else ''
+    title = meta.get('title', 'YouTube Video')
+
+    # Split body into segments by [MM:SS:frames] pattern
+    segments = re.split(r'\[(\d{2}:\d{2}:\d{2,3})\]', body)
+    # segments: ['', 'MM:SS:ff', ' text\n', 'MM:SS:ff', ' text\n', ...]
+
+    docs = []
+    for i in range(1, len(segments), 2):
+        timestamp_raw = segments[i]
+        text = segments[i + 1].strip() if i + 1 < len(segments) else ''
+        if not text:
+            continue
+
+        # Convert MM:SS:frames to seconds
+        parts = timestamp_raw.split(':')
+        minutes, seconds = int(parts[0]), int(parts[1])
+        total_seconds = minutes * 60 + seconds
+
+        youtube_link = f"https://www.youtube.com/watch?v={video_id}&t={total_seconds}"
+        display_ts = f"{minutes:02d}:{seconds:02d}"
+
+        docs.append(Document(
+            page_content=text,
+            metadata={
+                "source": title,
+                "source_type": "youtube",
+                "youtube_url": url,
+                "timestamp": display_ts,
+                "youtube_link": youtube_link
+            }
+        ))
+
+    return docs
+
 from langchain_core.prompts import PromptTemplate
 
 # Define the custom ReAct prompt in Hindi
@@ -43,10 +104,16 @@ hindi_react_template = """
 1. 'Thought': आपको हमेशा सोचना चाहिए कि क्या करना है। (जैसे: मुझे शास्त्र में अहिंसा के बारे में खोजना चाहिए)
 2. 'Action': वह उपकरण (tool) जिसे आप चुनेंगे, इन में से एक होना चाहिए: [{tool_names}]
 3. 'Action Input': उपकरण के लिए खोज शब्द (search query)।
-4. 'Observation': उपकरण द्वारा दी गई जानकारी।
+4. 'Observation': उपकरण द्वारा दी गई जानकारी। ध्यान दें कि Observation में metadata भी होती है जैसे source, source_type, timestamp, youtube_link।
 ... (यह Thought/Action/Action Input/Observation चक्र कई बार दोहराया जा सकता है)
 5. 'Thought': अब मुझे अंतिम उत्तर पता चल गया है।
 6. 'Final Answer': मूल प्रश्न का विस्तार से और विनम्रतापूर्वक हिंदी में अंतिम उत्तर।
+
+उद्धरण (Citation) नियम:
+- जब भी आप Observation से जानकारी का उपयोग करें, तो inline उद्धरण दें।
+- YouTube स्रोत के लिए: (स्रोत: <title>, <timestamp> - <youtube_link>)
+- अन्य स्रोत के लिए: (स्रोत: <source name>)
+- अंतिम उत्तर के अंत में एक "स्रोत (Sources):" अनुभाग जोड़ें जिसमें सभी संदर्भित स्रोतों की सूची हो।
 
 शुरू करें!
 
@@ -62,26 +129,37 @@ hindi_prompt = PromptTemplate.from_template(hindi_react_template)
 
 @app.post("/upload")
 async def upload(
-    text: Optional[str] = Form(None), 
+    text: Optional[str] = Form(None),
     file: Optional[UploadFile] = File(None),
     x_api_key: str = Header(...) # Key passed in headers
 ):
     embeddings, _ = get_llm_and_embeddings(x_api_key)
+    filename = file.filename if file else None
     content = (await file.read()).decode("utf-8") if file else text
-    
+
     if not content: return {"error": "No content"}
 
-    docs = RecursiveCharacterTextSplitter(chunk_size=1000).create_documents([content])
-    
+    # Check if content is a YouTube transcription
+    youtube_docs = parse_youtube_transcription(content)
+    if youtube_docs:
+        docs = youtube_docs
+    else:
+        source = filename or "Uploaded Text"
+        chunks = RecursiveCharacterTextSplitter(chunk_size=1000).create_documents([content])
+        for chunk in chunks:
+            chunk.metadata["source"] = source
+            chunk.metadata["source_type"] = "text"
+        docs = chunks
+
     # Load or create index using the user's key
     if os.path.exists(DB_PATH):
         vectorstore = FAISS.load_local(DB_PATH, embeddings, allow_dangerous_deserialization=True)
         vectorstore.add_documents(docs)
     else:
         vectorstore = FAISS.from_documents(docs, embeddings)
-    
+
     vectorstore.save_local(DB_PATH)
-    return {"message": "Knowledge updated."}
+    return {"message": f"Knowledge updated. {len(docs)} chunks indexed."}
 
 @app.post("/chat")
 async def chat(query: str, session_id: str, x_api_key: str = Header(...)):
@@ -95,7 +173,7 @@ async def chat(query: str, session_id: str, x_api_key: str = Header(...)):
     tool = create_retriever_tool(
         vectorstore.as_retriever(),
         "jain_scripture_search",
-        "दिगंबर जैन ग्रंथों और शास्त्रों के अंश खोजने के लिए उपयोगी।"
+        "दिगंबर जैन ग्रंथों और शास्त्रों के अंश खोजने के लिए उपयोगी। प्रत्येक परिणाम में source, source_type, और YouTube लिंक (यदि उपलब्ध हो) जैसी metadata जानकारी शामिल होती है।"
     )
     tools = [tool]
 
