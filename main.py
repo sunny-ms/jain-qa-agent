@@ -111,8 +111,8 @@ hindi_react_template = """
 
 उद्धरण (Citation) नियम:
 - जब भी आप Observation से जानकारी का उपयोग करें, तो inline उद्धरण दें।
-- YouTube स्रोत के लिए: (स्रोत: <title>, <timestamp> - <youtube_link>)
-- अन्य स्रोत के लिए: (स्रोत: <source name>)
+- YouTube स्रोत के लिए: [स्रोत: <title>, <timestamp> - <youtube_link>]
+- अन्य स्रोत के लिए: [स्रोत: <source name>]
 - अंतिम उत्तर के अंत में एक "स्रोत (Sources):" अनुभाग जोड़ें जिसमें सभी संदर्भित स्रोतों की सूची हो।
 
 शुरू करें!
