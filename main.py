@@ -10,7 +10,7 @@ from langchain_community.vectorstores import FAISS
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 # Core Tools & Hub (2026 Stable Path)
-from langchain_core.tools.retriever import create_retriever_tool
+from langchain_core.tools import tool as tool_decorator
 import langchainhub
 
 # Legacy/Classic Agent logic
@@ -169,13 +169,24 @@ async def chat(query: str, session_id: str, x_api_key: str = Header(...)):
         return {"answer": "ज्ञान का आधार (Knowledge base) खाली है। कृपया पहले दस्तावेज अपलोड करें।"}
         
     vectorstore = FAISS.load_local(DB_PATH, embeddings, allow_dangerous_deserialization=True)
+    retriever = vectorstore.as_retriever()
 
-    tool = create_retriever_tool(
-        vectorstore.as_retriever(),
-        "jain_scripture_search",
-        "दिगंबर जैन ग्रंथों और शास्त्रों के अंश खोजने के लिए उपयोगी। प्रत्येक परिणाम में source, source_type, और YouTube लिंक (यदि उपलब्ध हो) जैसी metadata जानकारी शामिल होती है।"
-    )
-    tools = [tool]
+    @tool_decorator
+    def jain_scripture_search(query: str) -> str:
+        """दिगंबर जैन ग्रंथों और शास्त्रों के अंश खोजने के लिए उपयोगी। परिणाम में source, timestamp, और YouTube लिंक शामिल होते हैं।"""
+        docs = retriever.invoke(query)
+        results = []
+        for doc in docs:
+            meta = doc.metadata
+            entry = doc.page_content
+            if meta.get("source_type") == "youtube":
+                entry += f"\n[स्रोत: {meta.get('source', '')}, समय: {meta.get('timestamp', '')}, लिंक: {meta.get('youtube_link', '')}]"
+            else:
+                entry += f"\n[स्रोत: {meta.get('source', 'Unknown')}]"
+            results.append(entry)
+        return "\n\n---\n\n".join(results) if results else "कोई जानकारी नहीं मिली।"
+
+    tools = [jain_scripture_search]
 
     if session_id not in user_memories:
         user_memories[session_id] = ConversationBufferMemory(
